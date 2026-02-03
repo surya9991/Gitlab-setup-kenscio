@@ -1,1 +1,258 @@
 
+
+# ELK Git Auto-Sync – Complete Setup Documentation
+
+## Repository Structure
+
+EGitLab
+└── Repo: ELK
+    └── Branch: elksync
+        ├── kvlh1/           ← directory
+        │   ├── logstash/
+        │   ├── kibana/
+        │   └── elasticsearch/
+        │
+        ├── kvlh2/           ← directory
+        │   ├── logstash/
+        │   ├── kibana/
+        │   └── elasticsearch/
+        │
+        ├── kvlh3/           ← directory
+        │   ├── logstash/
+        │   ├── kibana/
+        │   └── elasticsearch/
+        │
+        └── kvlh4/           ← directory
+            ├── logstash/
+            ├── kibana/
+            └── elasticsearch/
+## Purpose
+- Auto-sync ELK configs to GitLab
+- Maintain audit trail
+- Enable rollback
+- Prevent secrets from leaking
+- Safe cron-based automation
+
+## Server Details
+- Server: ELKvlh3
+- Sync User: elk-sync
+- passwd : elksync@123
+- Repo Path: /home/elk-sync/elk
+- Branch: elksync
+
+
+
+
+## Step-by-Step Setup
+### 1. Create Sync User
+useradd -m -s /bin/bash elk-sync
+
+
+
+
+### 2. Install ACL
+apt install -y acl
+
+
+
+
+### 3. Grant Read Access
+setfacl -R -m u:elk-sync:rX /etc/logstash
+setfacl -R -m u:elk-sync:rX /etc/kibana
+setfacl -R -m u:elk-sync:rX /etc/elasticsearch
+
+
+
+
+### 4. Switch User
+su - elk-sync
+
+
+
+
+### 5. SSH Setup
+ssh-keygen -t ed25519
+Add public key to GitLab user ELK-AUTOMATION-USER
+
+Test:
+ssh -T git@61.12.64.130
+
+
+
+
+### 6. Clone Repo
+git clone git@61.12.64.130:ELK_AUTOMATION_USER/elk.git
+
+
+
+
+### 7. Create Directory Structure
+mkdir -p elk/kvlh3/{logstash,kibana,elasticsearch}
+
+
+
+
+### 8. Git Identity
+git config --global user.name "elk-sync"
+git config --global user.email "elk-sync@kvlh3"
+
+
+
+
+### 9. Sync Script
+Place elk-gitsync.sh in /home/elk-sync/
+#!/bin/bash
+set -e
+
+# ========================
+# BASIC CONFIG
+# ========================
+REPO_DIR="/home/elk-sync/elk/"
+BRANCH="elksync"
+LOG_FILE="/home/elk-sync/elk-gitsync.log"
+HOST="kvlh3"
+LOCK="/tmp/elk-sync-vlh3.lock"
+EXCLUDE_FILE="/home/elk-sync/rsync-excludes.txt"
+
+exec >>"$LOG_FILE" 2>&1
+
+# ========================
+# PREVENT CONCURRENT RUNS
+# ========================
+exec 9>"$LOCK" || exit 1
+flock -n 9 || exit 0
+
+echo "===== $(date): Sync started on $HOST ====="
+
+cd "$REPO_DIR"
+
+# ========================
+# AUTO-STASH LOCAL CHANGES
+# ========================
+STASHED=0
+if ! git diff --quiet || ! git diff --cached --quiet; then
+  echo "$(date): Local changes detected, stashing"
+  git stash push -u -m "auto-stash before sync"
+  STASHED=1
+fi
+
+# ========================
+# PULL LATEST CHANGES
+# ========================
+git pull --rebase origin "$BRANCH"
+
+# ========================
+# RSYNC CONFIGS ONLY
+# ========================
+
+# ---- LOGSTASH ----
+rsync -a --delete \
+  --exclude-from="$EXCLUDE_FILE" \
+  /etc/logstash/ \
+  "$REPO_DIR/vlh3/logstash/"
+
+# ---- KIBANA ----
+rsync -a --delete \
+  --exclude-from="$EXCLUDE_FILE" \
+  /etc/kibana/ \
+  "$REPO_DIR/vlh3/kibana/"
+
+# ---- ELASTICSEARCH ----
+rsync -a --delete \
+  --exclude-from="$EXCLUDE_FILE" \
+  /etc/elasticsearch/ \
+  "$REPO_DIR/vlh3/elasticsearch/"
+
+# ========================
+# RESTORE STASH IF USED
+# ========================
+#if [ "$STASHED" -eq 1 ]; then
+#  echo "$(date): Restoring stashed changes"
+#  git stash pop
+#fi
+
+# ========================
+# COMMIT & PUSH IF CHANGED
+# ========================
+git add .gitignore vlh3/
+
+if ! git diff --cached --quiet; then
+  git commit -m "vlh3 config sync: $(date '+%Y-%m-%d %H:%M:%S')"
+  git push origin "$BRANCH"
+  echo "$(date): PUSHED"
+else
+  echo "$(date): NO CHANGES"
+fi
+
+echo "===== $(date): Sync completed ====="
+
+
+
+
+### 10. Rsync Excludes
+Create rsync-excludes.txt to ignore secrets and temp files
+vim /home/elk-sync/rsync-excludes.txt
+# Secrets
+certs/
+*.key
+*.p12
+*.keystore
+
+# Editor temp files
+*.swp
+*.swo
+*.swx
+*~
+
+
+
+
+### 11. Git Ignore
+Restrict tracking to approved directories only
+/home/elk-sync/elk/.gitignore 
+# Ignore everything in vlh3
+vlh3/*
+
+# Allow only these directories
+!vlh3/logstash/
+!vlh3/kibana/
+!vlh3/elasticsearch/
+
+
+
+
+### 12. Manual Run
+cd /home/elk-sync/
+bash elk-gitsync.sh
+
+
+
+### 13. check logs
+cd /home/elk-sync/
+cat elk-gitsync.sh
+
+example output:
+===== Wed Jan 21 05:59:24 PM IST 2026: Sync started on kvlh3 =====
+From 61.12.64.130:ELK_AUTOMATION_USER/elk
+ * branch            elksync    -> FETCH_HEAD
+Already up to date.
+[elksync 8d3565e] vlh3 config sync: 2026-01-21 17:59:25
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+remote: 
+remote: To create a merge request for elksync, visit: 
+remote:   http://10.0.0.219/ELK_AUTOMATION_USER/elk/-/merge_requests/new?merge_request%5Bsource_branch%5D=elksync
+remote: 
+To 61.12.64.130:ELK_AUTOMATION_USER/elk.git
+   133b257..8d3565e  elksync -> elksync
+Wed Jan 21 05:59:25 PM IST 2026: PUSHED
+===== Wed Jan 21 05:59:25 PM IST 2026: Sync completed =====
+
+
+
+### 14. Cron Job
+*/5 * * * * /home/elk-sync/elk-gitsync.sh
+
+## Result
+- Configs synced to GitLab automatically
+- Clean audit history
+- Scalable to multiple ELK servers
